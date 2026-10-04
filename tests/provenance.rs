@@ -1,4 +1,6 @@
-use manitou::{brain_record, generate_signing_key, record_signed, verify, ProvenanceLog, Verification};
+use manitou::{
+    brain_record, generate_signing_key, record_signed, verify, ProvenanceLog, Verification,
+};
 use std::fs;
 use std::path::PathBuf;
 

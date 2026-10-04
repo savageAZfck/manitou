@@ -1,4 +1,6 @@
-use manitou::{brain_record, generate_signing_key, record_signed, verify, ProvenanceLog, Verification};
+use manitou::{
+    brain_record, generate_signing_key, record_signed, verify, ProvenanceLog, Verification,
+};
 use std::fs;
 
 fn main() {
@@ -11,12 +13,24 @@ fn main() {
 
     // Record the spirit at first sighting.
     let manifest = record_signed(&dir.join("model"), "qwen/test-7b", &key).unwrap();
-    println!("manifest: {} files, fingerprint {}", manifest.files.len(), &manifest.fingerprint()[..16]);
-    println!("signature valid: {}", manifest.verify_signature(&key.verifying_key()));
+    println!(
+        "manifest: {} files, fingerprint {}",
+        manifest.files.len(),
+        &manifest.fingerprint()[..16]
+    );
+    println!(
+        "signature valid: {}",
+        manifest.verify_signature(&key.verifying_key())
+    );
 
     // Log the brain swap.
     let log = ProvenanceLog::new(dir.join("provenance.jsonl"));
-    let mut rec = brain_record("qwen/test-7b", "main", "local_dir", manifest.files.values().map(|f| f.size).sum());
+    let mut rec = brain_record(
+        "qwen/test-7b",
+        "main",
+        "local_dir",
+        manifest.files.values().map(|f| f.size).sum(),
+    );
     rec.weights_manifest_sha256 = Some(manifest.fingerprint());
     rec.policy_hash = Some("policyabc".into());
     let anchor = log.record_load(rec, Some(&key)).unwrap();

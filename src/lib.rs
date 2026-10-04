@@ -75,13 +75,20 @@ impl Manifest {
 
     /// Verify the signature over `canonical_message`.
     pub fn verify_signature(&self, key: &VerifyingKey) -> bool {
-        let Some(sig_hex) = &self.signature else { return false };
-        let Ok(bytes) = hex::decode(sig_hex) else { return false };
+        let Some(sig_hex) = &self.signature else {
+            return false;
+        };
+        let Ok(bytes) = hex::decode(sig_hex) else {
+            return false;
+        };
         let Ok(arr) = <[u8; 64]>::try_from(bytes.as_slice()) else {
             return false;
         };
-        key.verify_strict(self.canonical_message().as_bytes(), &Signature::from_bytes(&arr))
-            .is_ok()
+        key.verify_strict(
+            self.canonical_message().as_bytes(),
+            &Signature::from_bytes(&arr),
+        )
+        .is_ok()
     }
 }
 
@@ -258,8 +265,12 @@ impl BrainRecord {
 
     /// Verify the Ed25519 signature.
     pub fn verify_signature(&self, key: &VerifyingKey) -> bool {
-        let Some(sig_hex) = &self.signature else { return false };
-        let Ok(bytes) = hex::decode(sig_hex) else { return false };
+        let Some(sig_hex) = &self.signature else {
+            return false;
+        };
+        let Ok(bytes) = hex::decode(sig_hex) else {
+            return false;
+        };
         let Ok(arr) = <[u8; 64]>::try_from(bytes.as_slice()) else {
             return false;
         };
@@ -283,7 +294,11 @@ impl ProvenanceLog {
     /// Append a record, optionally signing it first. Returns the
     /// SHA-256 of the exact line written — the anchor to drop into an
     /// audit ledger as a `model_provenance` event.
-    pub fn record_load(&self, mut record: BrainRecord, signer: Option<&SigningKey>) -> io::Result<String> {
+    pub fn record_load(
+        &self,
+        mut record: BrainRecord,
+        signer: Option<&SigningKey>,
+    ) -> io::Result<String> {
         if let Some(key) = signer {
             let sig = key.sign(&record.signing_body());
             record.signature = Some(hex::encode(sig.to_bytes()));
@@ -333,6 +348,169 @@ pub fn brain_record(model_id: &str, revision: &str, source: &str, model_bytes: u
         signature: None,
         signature_scheme: None,
         public_key: None,
+    }
+}
+
+// ──────────────────────── output span attestations ──────────────────
+
+/// A signed attestation that a specific output span came from a
+/// specific brain epoch. The span binds: model identity, weights
+/// manifest fingerprint, adapter, prompt hash, output hash, token
+/// range, and the policy in force — everything needed for a third
+/// party to verify "these words came from this exact brain under this
+/// exact governance."
+///
+/// Prompt and output appear as hashes, not text: the attestation is
+/// shareable without disclosing the content. The holder of the
+/// plaintext can prove correspondence; everyone else sees only that a
+/// signed span exists.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpanRecord {
+    pub ts: u64,
+    pub kind: String,
+    /// Which mind emitted the span — model id + revision.
+    pub model_id: String,
+    pub revision: String,
+    /// Fingerprint of the serving weights at emission time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weights_manifest_sha256: Option<String>,
+    /// Dream adapter in force, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dream_adapter: Option<String>,
+    /// SHA-256 of the prompt bytes.
+    pub prompt_sha256: String,
+    /// SHA-256 of the output bytes.
+    pub output_sha256: String,
+    /// Token range covered within the response stream.
+    #[serde(default)]
+    pub token_start: u64,
+    #[serde(default)]
+    pub token_end: u64,
+    /// Policy hash in force during generation (wintercount).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_hash: Option<String>,
+    /// Ledger anchor the emission attached to, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ledger_anchor: Option<String>,
+    #[serde(default)]
+    pub signed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_scheme: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+}
+
+impl SpanRecord {
+    /// Canonical body for signing — everything but signature fields.
+    pub fn signing_body(&self) -> Vec<u8> {
+        let mut v = serde_json::to_value(self).unwrap_or_default();
+        if let Some(m) = v.as_object_mut() {
+            m.remove("signature");
+            m.remove("signature_scheme");
+            m.remove("public_key");
+            m.remove("signed");
+        }
+        serde_json::to_vec(&v).unwrap_or_default()
+    }
+
+    /// Verify the Ed25519 signature.
+    pub fn verify_signature(&self, key: &VerifyingKey) -> bool {
+        let Some(sig_hex) = &self.signature else {
+            return false;
+        };
+        let Ok(bytes) = hex::decode(sig_hex) else {
+            return false;
+        };
+        let Ok(arr) = <[u8; 64]>::try_from(bytes.as_slice()) else {
+            return false;
+        };
+        key.verify_strict(&self.signing_body(), &Signature::from_bytes(&arr))
+            .is_ok()
+    }
+
+    /// Verify a span against a plaintext output — the holder of the
+    /// text proves correspondence; everyone else only sees hashes.
+    pub fn covers_output(&self, output: &[u8]) -> bool {
+        self.output_sha256 == hex::encode(Sha256::digest(output))
+    }
+
+    pub fn covers_prompt(&self, prompt: &[u8]) -> bool {
+        self.prompt_sha256 == hex::encode(Sha256::digest(prompt))
+    }
+}
+
+/// A fresh `SpanRecord` skeleton for one response span.
+pub fn span_record(
+    model_id: &str,
+    revision: &str,
+    prompt: &[u8],
+    output: &[u8],
+    token_start: u64,
+    token_end: u64,
+) -> SpanRecord {
+    SpanRecord {
+        ts: now(),
+        kind: "output_span".to_string(),
+        model_id: model_id.to_string(),
+        revision: revision.to_string(),
+        weights_manifest_sha256: None,
+        dream_adapter: None,
+        prompt_sha256: hex::encode(Sha256::digest(prompt)),
+        output_sha256: hex::encode(Sha256::digest(output)),
+        token_start,
+        token_end,
+        policy_hash: None,
+        ledger_anchor: None,
+        signed: false,
+        signature: None,
+        signature_scheme: None,
+        public_key: None,
+    }
+}
+
+impl ProvenanceLog {
+    /// Append a span attestation, optionally signing it first. Returns
+    /// the SHA-256 of the exact line written — the anchor for the audit
+    /// ledger. The log is multi-kind: `brain_manifest` and
+    /// `output_span` records interleave in emission order.
+    pub fn record_span(
+        &self,
+        mut span: SpanRecord,
+        signer: Option<&SigningKey>,
+    ) -> io::Result<String> {
+        if let Some(key) = signer {
+            let sig = key.sign(&span.signing_body());
+            span.signature = Some(hex::encode(sig.to_bytes()));
+            span.signature_scheme = Some("ed25519".to_string());
+            span.public_key = Some(hex::encode(key.verifying_key().to_bytes()));
+            span.signed = true;
+        }
+        let mut line = serde_json::to_vec(&span)?;
+        let hash = hex::encode(Sha256::digest(&line));
+        if let Some(dir) = self.path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        line.push(b'\n');
+        f.write_all(&line)?;
+        Ok(hash)
+    }
+
+    /// All span attestations in the log, in order.
+    pub fn spans(&self) -> Vec<SpanRecord> {
+        let Ok(text) = fs::read_to_string(&self.path) else {
+            return Vec::new();
+        };
+        text.lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| v.get("kind").and_then(|k| k.as_str()) == Some("output_span"))
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect()
     }
 }
 
