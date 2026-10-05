@@ -12,7 +12,6 @@
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use serde_json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
